@@ -1,7 +1,7 @@
 // routes/auth.ts
 import { Hono } from "hono";
 import User from "../models/user.model"; // Import User model
-import bcrypt from "bcryptjs";
+import bcrypt from "bcryptjs"
 
 const app = new Hono();
 
