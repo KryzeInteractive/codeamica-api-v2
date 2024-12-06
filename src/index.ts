@@ -1,10 +1,12 @@
-import { Hono } from 'hono'
+import { Hono } from "hono";
 import { cors } from "hono/cors";
 import mongoose from "mongoose";
 
 import routes from "./routes";
 
-const app = new Hono()
+const app = new Hono();
+
+// Use CORS middleware
 app.use(cors());
 
 // changing name of the database we connecting to: .mongodb.net/{database_name}
@@ -36,6 +38,15 @@ app.get("/", (c) => {
 });
 
 app.route("/homepage", routes.homepage);
+app.route("/course", routes.course);
+app.route("/user", routes.user);
+app.route("/learning-path", routes.learningPath);
+app.route("/lesson-text", routes.lessonText);
+// app.route("/lesson-video", routes.lessonVideo);
+app.route("/lesson-quiz", routes.lessonQuiz);
+app.route("/lesson-code-exercise", routes.lessonCodeExercise);
+app.route("/lesson", routes.lesson);
+app.route("/user-progress", routes.userProgress);
 
 export default {
   port: 10004,

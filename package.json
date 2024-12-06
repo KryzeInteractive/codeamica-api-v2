@@ -4,6 +4,8 @@
     "dev": "bun run --hot src/index.ts"
   },
   "dependencies": {
+    "bcrypt": "^5.1.1",
+    "codeamica-api-v2": "file:",
     "hono": "^4.6.10",
     "mongoose": "^8.8.2"
   },
