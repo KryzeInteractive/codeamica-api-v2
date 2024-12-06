@@ -1,158 +1,197 @@
-// routes/auth.ts
 import { Hono } from "hono";
-import User from "../models/user.model"; // Import User model
-import bcrypt from "bcryptjs";
+import UserProgress from "../models/userProgress.model";
+import Course from "../models/course.model";
+import { getErrorMessage } from "../utils/apiErrorHandler";
+import LearningPath from "../models/learningPath.model";
+import { ObjectId } from "mongodb";
+import User from "../models/user.model";
 
 const app = new Hono();
 
-app.post("/login", async (c) => {
-  const { email, password } = await c.req.json();
+// NOTICE: lessonId input for this api must be a sub lesson (ex: lessonTextId, lessonVideoId,...)
+// DO NOT use lessonId in lessons collection
+// With lessons of type text and video, content is not required to be passed. However,
+// for lessons of type code and quiz, content is required. Content is an object,
+// where the content for a quiz is the output returned by the quiz score API
+// (the last function in the lessonQuiz.ts file). As for the content of code lessons,
+// I haven't implemented it yet because I don't fully understand how it functions on the
+// front end, so I will update later
+app.post("/update-progress", async (c) => {
+  try {
+    const { userId, courseId, lessonContentId, content } = await c.req.json();
+    // Find or create new progress record
+    let userProgress = await UserProgress.findOne({
+      user: userId,
+      course: courseId,
+    });
+    if (!userProgress) {
+      userProgress = new UserProgress({ user: userId, course: courseId });
+    }
 
-  // Check if the user exists
-  const user = await User.findOne({ email });
+    // Add lesson to completedLessons if not already there
+    if (!userProgress.completedLessons.includes(lessonContentId)) {
+      userProgress.completedLessons.push(lessonContentId);
+    }
 
-  if (!user) {
-    return c.json({ error: "User not found" }, 404);
+    // Update lastCompletedLesson
+    userProgress.lastCompletedLesson = lessonContentId;
+    userProgress.content = content;
+
+    // Retrieve course lessons and calculate total lessons based on content count
+    const course = await Course.findById(courseId).populate({
+      path: "lessons",
+      populate: {
+        path: "content",
+      },
+    });
+
+    if (!course) {
+      return c.json({ message: "Course not found" }, 404);
+    }
+
+    // Calculate totalLessons based on the number of content items in each lesson
+    const totalLessons = course.lessons.reduce(
+      (acc, lesson: any) => acc + lesson.content.length,
+      0
+    );
+    const completedLessons = userProgress.completedLessons.length;
+
+    // Calculate progress as a percentage
+    userProgress.progress = (completedLessons / totalLessons) * 100;
+
+    // Save updated progress
+    await userProgress.save();
+
+    return c.json({
+      progress: userProgress.progress,
+      completedLessons,
+      totalLessons,
+    });
+  } catch (error) {
+    console.error(error);
+    return c.json({ message: "Error calculating progress" }, 500);
   }
-
-  // Compare the provided password with the stored hashed password
-  const isMatch = await bcrypt.compare(password, user.password as string);
-
-  if (!isMatch) {
-    return c.json({ error: "Invalid credentials" }, 401);
-  }
-
-  // Remove password before returning user
-  const { password: _, ...userWithoutPassword } = user.toObject();
-
-  return c.json({ message: "Login successful", user: userWithoutPassword });
 });
 
-// Sign-up route
-app.post("/signup", async (c) => {
-  const { email, password, name, role } = await c.req.json();
+// get user course progress
+// use this url to test API below: http://localhost:10004/user-progress/courses/67257d42600872a7d41041c2
+app.get("/courses/:userId", async (c) => {
+  try {
+    const userId = c.req.param("userId");
+    const userProgress = await UserProgress.find({
+      user: new ObjectId(userId),
+    }).populate({
+      path: "course",
+      select: "_id title lessons description",
+      populate: {
+        path: "lessons",
+        select: "_id title content",
+        populate: {
+          path: "content.contentId",
+          model: "LessonText",
+          select: "_id title",
+        },
+      },
+    });
 
-  // Check if user with the given email already exists
-  const existingUser = await User.findOne({ email });
-  if (existingUser) {
-    return c.json({ error: "Email already in use" }, 400);
+    if (!userProgress.length) {
+      return c.json({ message: "Cannot find progress for this user" }, 404);
+    }
+
+    return c.json(userProgress, 200);
+  } catch (error) {
+    console.error(error);
+    return c.json({ message: getErrorMessage(error) }, 500);
   }
+});
 
-  // Hash the password before saving the user
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  // Create new user
-  const newUser = new User({
-    email,
-    password: hashedPassword,
-    name,
-    role,
+async function getCourseProgress(userId: string, courseId: string) {
+  const userProgress = await UserProgress.findOne({
+    user: userId,
+    course: courseId,
   });
 
-  // Save the user to the database
-  await newUser.save();
-
-  // Respond with success message
-  return c.json({ message: "Sign-up successful", user: newUser });
-});
-
-// Update user details (excluding password)
-app.put("/edit/:id", async (c) => {
-  const { id } = c.req.param(); // Get user ID from the route parameters
-  const { email, name } = await c.req.json();
-
-  try {
-    // Find the user by ID
-    const user = await User.findById(id);
-    if (!user) {
-      return c.json({ error: "User not found" }, 404);
-    }
-
-    // Update fields only if they are provided
-    if (email) {
-      const existingUser = await User.findOne({ email });
-      if (existingUser && existingUser._id.toString() !== id) {
-        return c.json({ error: "Email already in use by another user" }, 400);
-      }
-      user.email = email;
-    }
-
-    if (name) {
-      user.name = name;
-    }
-
-    // Save the updated user data
-    await user.save();
-
-    // Respond with success message and updated user info
-    return c.json({ message: "User updated successfully", user });
-  } catch (error) {
-    console.error("Error updating user:", error);
-    return c.json({ error: "An error occurred while updating the user" }, 500);
-  }
-});
-
-// Update user password
-app.put("/edit-pw/:id", async (c) => {
-  const { id } = c.req.param(); // Get user ID from the route parameters
-  const { password } = await c.req.json();
-
-  if (!password) {
-    return c.json({ error: "Password is required" }, 400);
+  if (!userProgress) {
+    return { progress: 0, newContent: false };
   }
 
+  const course = await Course.findById(courseId).select("version").exec();
+  const hasNewContent =
+    (course?.version ?? 0) > (userProgress.courseVersion ?? 0);
+
+  return {
+    progress: userProgress.progress,
+    newContent: hasNewContent,
+    courseTitle: course?.title,
+  };
+}
+
+// get user learnng path progress
+// use this usl to test api below: http://localhost:10004/user-progress/learning-paths/67257d42600872a7d41041c2
+app.get("/learning-paths/:userId", async (c) => {
   try {
-    // Find the user by ID
-    const user = await User.findById(id);
-    if (!user) {
-      return c.json({ error: "User not found" }, 404);
+    const userId = c.req.param("userId");
+
+    const user = await User.findById(userId)
+      .populate({
+        path: "pathsJoined",
+        select: "_id title courses description",
+        populate: {
+          path: "courses",
+          select: "_id title lessons description",
+          populate: {
+            path: "lessons",
+            select: "_id title",
+            populate: {
+              path: "content.contentId",
+              model: "LessonText",
+              select: "_id title",
+            },
+          },
+        },
+      })
+      .exec();
+
+    if (!user || !user.pathsJoined || user.pathsJoined.length === 0) {
+      return c.json({ message: "Cannot find any path for this user." }, 404);
     }
 
-    // Hash the new password before saving
-    const hashedPassword = await bcrypt.hash(password, 10);
-    user.password = hashedPassword;
+    const learningPathsWithProgress = await Promise.all(
+      user.pathsJoined.map(async (learningPath: any) => {
+        const coursesWithProgress = await Promise.all(
+          learningPath.courses.map(async (course: any) => {
+            const courseProgress = await getCourseProgress(userId, course._id);
+            return {
+              ...course.toObject(),
+              courseProgress,
+            };
+          })
+        );
 
-    // Save the updated user data
-    await user.save();
+        const totalProgress = coursesWithProgress.reduce(
+          (acc: number, course: any) =>
+            acc + (course.courseProgress.progress || 0),
+          0
+        );
+        const totalCourses = coursesWithProgress.length;
+        const learningPathProgress =
+          totalCourses > 0 ? totalProgress / totalCourses : 0;
 
-    // Respond with success message
-    return c.json({ message: "Password updated successfully" });
+        return {
+          ...learningPath.toObject(),
+          courses: coursesWithProgress,
+          learningPathProgress,
+        };
+      })
+    );
+
+    return c.json(learningPathsWithProgress, 200);
   } catch (error) {
-    console.error("Error updating password:", error);
+    console.error(error);
     return c.json(
-      { error: "An error occurred while updating the password" },
+      { message: "An error occurred while retrieving user paths." },
       500
     );
   }
 });
-
-// Add path to user's pathsJoined
-app.post("/add-path/:id", async (c) => {
-  const { id } = c.req.param();
-  const { pathId } = await c.req.json();
-
-  if (!pathId) {
-    return c.json({ error: "Path ID is required" }, 400);
-  }
-
-  try {
-    const user = await User.findById(id);
-    if (!user) {
-      return c.json({ error: "User not found" }, 404);
-    }
-
-    // Add the path ID to the user's pathsJoined array if it doesn't already exist
-    if (!user.pathsJoined.includes(pathId)) {
-      user.pathsJoined.push(pathId);
-      await user.save();
-    }
-
-    // Respond with success message
-    return c.json({ message: "Path added successfully", user });
-  } catch (error) {
-    console.error("Error adding path:", error);
-    return c.json({ error: "An error occurred while adding the path" }, 500);
-  }
-});
-
 export default app;
